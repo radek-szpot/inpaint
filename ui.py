@@ -41,6 +41,7 @@ class ImageLabel(QLabel):
 
 class MainWindow(QMainWindow):
     path_orginal: Optional[str] = None
+    path_mask: Optional[str] = None
     path_saving: Optional[str] = None
 
     def __init__(self):
@@ -56,7 +57,7 @@ class MainWindow(QMainWindow):
         self.btn_inpaint = QPushButton("Make inpaint")
         self.btn_inpaint.clicked.connect(self.inpaint_click)
         self.btn_mask = QPushButton("Add mask")
-        self.btn_mask.clicked.connect(self.mask_window.show)
+        self.btn_mask.clicked.connect(self.mask_click)
         self.btn_save_path = QPushButton("Add save path")
         self.btn_save_path.clicked.connect(self.inpainted_save)
         self.btn_save = QPushButton("Save image")
@@ -127,22 +128,34 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Error while inpainting 2")
             else:
                 self.photoAfter.setPixmap(QPixmap(img_inpainted))
-        else:
+        elif not self.path_orginal:
             self.statusBar().showMessage(f"Please upload image to inpaint")
+        elif not self.path_mask:
+            self.statusBar().showMessage(f"Please upload mask of image to inpaint")
+        else:
+            self.statusBar().showMessage(f"Unknown Error")
 
+    def mask_click(self):
+        self.mask_window.show()
+        self.path_mask = self.mask_window.path_mask
 
     def inpainted_save(self):
         if not self.path_saving:
             self.statusBar().showMessage(f"Please specify path")
 
         
+
+        
 class MaskWindow(QMainWindow):
     """
     Window to drag or give path to mask
     """
+    path_mask: Optional[str] = None
+
     def __init__(self):
         super(MaskWindow, self).__init__()
         self.resize(400, 300)
+        self.setAcceptDrops(True)
 
         # Label
         self.mask_window = ImageLabel()
@@ -152,6 +165,16 @@ class MaskWindow(QMainWindow):
         widget.setLayout(layout)        
 
         self.setCentralWidget(widget)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasImage:
+            event.setDropAction(Qt.CopyAction)
+            file_path = event.mimeData().urls()[0].toLocalFile()
+            self.path_mask = file_path
+
+            event.accept()
+        else:
+            event.ignore()
 
 
 if __name__ == "__main__":

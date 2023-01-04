@@ -2,9 +2,9 @@ import numpy as np
 import cv2 as cv
 from skimage.restoration import inpaint
 
-def inpaint_algorithms(path, r=3, flag=cv.INPAINT_NS):
-    img_to_inpaint = load_image_from_path(path)
-    mask = load_image_from_path(f"{path[:len(path) - 4]}_mask.jpg")
+def inpaint_algorithms(img_path, mask_path, r=3, flag=cv.INPAINT_NS):
+    img_to_inpaint = load_image_from_path(img_path)
+    mask = load_image_from_path(mask_path)
 
     if flag in [0, 1]:
         img_inpainted = cv.inpaint(img_to_inpaint, mask, inpaintRadius=r, flags=flags)
