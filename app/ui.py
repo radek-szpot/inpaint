@@ -13,8 +13,8 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QWidget,
 )
-from app.inpaint import inpaint_algorithms, cv, np
-from threading import *
+from app.inpaint import inpaint_algorithms, file_has_graphic_extension, cv, np
+from threading import Thread
 
 COMBO_MAP = {
     'Skimage-biharmonic': 5,
@@ -157,10 +157,11 @@ class MainWindow(QMainWindow):
         if event.mimeData().hasImage:
             event.setDropAction(Qt.CopyAction)
             file_path = event.mimeData().urls()[0].toLocalFile()
-            # TODO: add validation function callback if is graphic file
+            if not file_has_graphic_extension(file_path):
+                self.display_status_bar_message("File must have graphic extension like .png")
+                return
             self.path_original = file_path
             self.set_image(file_path)
-
             event.accept()
         else:
             event.ignore()
@@ -202,10 +203,11 @@ class MainWindow(QMainWindow):
                 img_mask=self.img_mask,
                 flag=inpaint_flag,
             )
+            self.movie_stop()
             if error:
                 self.display_status_bar_message(f"Unhandled error while inpainting: {error}")
+                self.image_after.hide()
             else:
-                self.movie_stop()
                 image_after = QImage(
                     self.img_inpainted,
                     self.img_inpainted.shape[1],
@@ -220,10 +222,12 @@ class MainWindow(QMainWindow):
             self.display_status_bar_message(f"Error while inpainting: {e}")
 
     def mask_click(self):
-        mask = QFileDialog.getOpenFileName(self, "Select mask for image", self.path_original, "All Files (*)")
-        if mask[0]:
-            # TODO: add validation function callback if is graphic file
-            self.path_mask = mask[0]
+        mask_path, _ = QFileDialog.getOpenFileName(self, "Select mask for image", self.path_original, "All Files (*)")
+        if mask_path:
+            if not file_has_graphic_extension(mask_path):
+                self.display_status_bar_message("File must have graphic extension like .png")
+                return
+            self.path_mask = mask_path
 
     def save_click(self):
         if self.img_inpainted is None:
