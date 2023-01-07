@@ -1,19 +1,19 @@
 import sys
 from typing import Optional
 from PyQt5.QtCore import Qt, QSize, QTimer
-from PyQt5.QtGui import QPixmap, QImage, QMovie, QFont
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPixmap, QMovie
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
     QGridLayout,
     QLabel,
     QMainWindow,
     QPushButton,
     QStatusBar,
     QWidget,
-    QFileDialog,
 )
-from app import inpaint_algorithms, cv
+from app.inpaint import inpaint_algorithms, cv, np
 from threading import *
 
 COMBO_MAP = {
@@ -34,17 +34,61 @@ class ImageLabel(QLabel):
         self.setStyleSheet('''QLabel{border: 4px dashed #aaa}''')
 
 
+class Canvas(QLabel):
+    def __init__(self, w, h):
+        super().__init__()
+        self.mask_array = np.zeros(shape=(h, w, 1), dtype=np.uint8)
+        pixmap = QPixmap(w, h)
+        pixmap.fill(Qt.transparent)
+        self.setPixmap(pixmap)
+
+        self.last_x, self.last_y = None, None
+        self.pen_color = Qt.white
+
+    def set_pen_color(self, c):
+        self.pen_color = QColor(c)
+
+    def mouseMoveEvent(self, e):
+        if self.last_x is None:  # First event.
+            self.last_x = e.x()
+            self.last_y = e.y()
+            return  # Ignore the first time.
+
+        painter = QPainter(self.pixmap())
+        painter.setOpacity(0.2)
+        p = painter.pen()
+        p.setWidth(7)
+        p.setColor(self.pen_color)
+        painter.setPen(p)
+        painter.drawLine(self.last_x, self.last_y, e.x(), e.y())
+        painter.end()
+        self.update()
+        self.mask_array[self.last_y, self.last_x] = 255
+        self.mask_array[e.y(), e.x()] = 255
+
+        # Update the origin for next time.
+        self.last_x = e.x()
+        self.last_y = e.y()
+
+    def mouseReleaseEvent(self, e):
+        self.last_x = None
+        self.last_y = None
+
+
 class MainWindow(QMainWindow):
     path_original: Optional[str] = ""
     path_mask: Optional[str] = ""
     path_saving: Optional[str] = ""
-    img_inpainted = []
+    img_inpainted = None
+    img_mask = None
+    canvas = None
 
     def __init__(self):
         super().__init__(parent=None)
         self.setWindowTitle("Inpaint app")
         self.resize(1024, 600)
         self.setAcceptDrops(True)
+        # initialize ui fields
         self.drag_image = ImageLabel()
         self.image_after = QLabel("After inpaint the result will be displayed here")
         self.image_after.setAlignment(Qt.AlignCenter)
@@ -56,26 +100,29 @@ class MainWindow(QMainWindow):
         self.btn_save.clicked.connect(self.save_click)
         self.combobox_inpaint = QComboBox()
         self.combobox_inpaint.addItems(COMBO_MAP.keys())
-        self.btn_add_mask = QPushButton("Add mask to current image (TODO)")
+        self.btn_add_mask = QPushButton("Manually create mask on current image (not recommended)")
         self.btn_add_mask.clicked.connect(self.add_mask_click)
+        self.btn_upload_mask = QPushButton("Upload mask added manually (not recommended)")
+        self.btn_upload_mask.clicked.connect(self.upload_mask_click)
         self.movie = QMovie("../assets/loading.gif")
         self.loading_gif = QLabel()
         self.loading_gif.setMovie(self.movie)
         self.loading_gif.setAlignment(Qt.AlignCenter)
-        # set layout
-        layout = QGridLayout()
-        widget = QWidget()
-        layout.addWidget(self.btn_inpaint, 0, 0)
-        layout.addWidget(self.combobox_inpaint, 0, 1)
-        layout.addWidget(self.btn_mask, 1, 0)
-        layout.addWidget(self.btn_save, 1, 1)
-        layout.addWidget(self.drag_image, 2, 0)
-        layout.addWidget(self.image_after, 2, 1)
-        layout.addWidget(self.loading_gif, 2, 1)
-        layout.addWidget(self.btn_add_mask, 3, 0, 1, 2)
-        widget.setLayout(layout)
+        # set layout and widgets
+        self.layout = QGridLayout()
+        self.widget = QWidget()
+        self.layout.addWidget(self.btn_inpaint, 0, 0)
+        self.layout.addWidget(self.combobox_inpaint, 0, 1)
+        self.layout.addWidget(self.btn_mask, 1, 0)
+        self.layout.addWidget(self.btn_save, 1, 1)
+        self.layout.addWidget(self.drag_image, 2, 0)
+        self.layout.addWidget(self.image_after, 2, 1)
+        self.layout.addWidget(self.loading_gif, 2, 1)
+        self.layout.addWidget(self.btn_add_mask, 3, 0)
+        self.layout.addWidget(self.btn_upload_mask, 3, 1)
+        self.widget.setLayout(self.layout)
 
-        self.setCentralWidget(widget)
+        self.setCentralWidget(self.widget)
         self.create_menu()
         self.statusBar().setStyleSheet("background-color : #e6e6e6; border :1px inset #c7c7c7;")
 
@@ -84,6 +131,15 @@ class MainWindow(QMainWindow):
         help = self.menuBar().addMenu("Help")
         menu.addAction("&Exit", self.close)
         # help.addAction()
+
+    def _createStatusBar(self):
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
+    def display_status_bar_message(self, message):
+        self.statusBar().showMessage(message)
+        self.statusBar().show()
+        QTimer.singleShot(5000, self.statusBar().clearMessage)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasImage:
@@ -111,11 +167,11 @@ class MainWindow(QMainWindow):
 
     def set_image(self, file_path):
         image = QPixmap(file_path)
-        if image.width() > 512 or image.height() > 512:
-            image = image.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
+        image = image.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
         self.drag_image.setPixmap(image)
 
     def movie_start(self):
+        self.display_status_bar_message("Loading")
         self.movie.setScaledSize(QSize().scaled(150, 150, Qt.KeepAspectRatio))
         self.movie.start()
         self.loading_gif.show()
@@ -125,24 +181,16 @@ class MainWindow(QMainWindow):
         self.movie.stop()
         self.loading_gif.hide()
         self.image_after.show()
-
-    def _createStatusBar(self):
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-
-    def display_status_bar_message(self, message):
-        self.statusBar().showMessage(message)
-        self.statusBar().show()
-        QTimer.singleShot(5000, self.statusBar().clearMessage)
+        self.display_status_bar_message("Inpainted successfully")
 
     def inpaint_click(self):
-        if self.path_original and self.path_mask:
+        if self.path_original and (self.path_mask or self.img_mask is not None):
             self.movie_start()
             thread = Thread(target=self.inpaint_operation)
             thread.start()
         elif not self.path_original:
             self.display_status_bar_message(f"Please upload image to inpaint")
-        elif not self.path_mask:
+        else:
             self.display_status_bar_message(f"Please upload mask of image to inpaint")
 
     def inpaint_operation(self):
@@ -150,17 +198,23 @@ class MainWindow(QMainWindow):
         try:
             self.img_inpainted, error = inpaint_algorithms(
                 img_path=self.path_original,
-                mask_path=self.path_mask,
-                flag=inpaint_flag
+                mask_path=self.path_mask if self.path_mask else None,
+                img_mask=self.img_mask,
+                flag=inpaint_flag,
             )
-            self.movie_stop()
             if error:
                 self.display_status_bar_message(f"Unhandled error while inpainting: {error}")
             else:
-                image_after = QImage(self.img_inpainted, self.img_inpainted.shape[1], self.img_inpainted.shape[0], self.img_inpainted.shape[1] * 3, QImage.Format_RGB888)
+                self.movie_stop()
+                image_after = QImage(
+                    self.img_inpainted,
+                    self.img_inpainted.shape[1],
+                    self.img_inpainted.shape[0],
+                    self.img_inpainted.shape[1] * 3,
+                    QImage.Format_RGB888
+                )
                 pixmap_img_after = QPixmap(image_after)
-                if pixmap_img_after.width() > 512 or pixmap_img_after.height() > 512:
-                    pixmap_img_after = pixmap_img_after.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
+                pixmap_img_after = pixmap_img_after.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
                 self.image_after.setPixmap(pixmap_img_after)
         except Exception as e:
             self.display_status_bar_message(f"Error while inpainting: {e}")
@@ -172,10 +226,15 @@ class MainWindow(QMainWindow):
             self.path_mask = mask[0]
 
     def save_click(self):
-        if not self.img_inpainted:
+        if self.img_inpainted is None:
             self.display_status_bar_message(f"You must make proper inpaint first")
             return
-        path_saving = QFileDialog.getSaveFileName(self, "Save inpainted image", f"{self.path_original}/inpainted_image", "All Files (*)")
+        path_saving = QFileDialog.getSaveFileName(
+            self,
+            "Save inpainted image",
+            f"{self.path_original}/inpainted_image",
+            "All Files (*)"
+        )
         if path_saving[0]:
             try:
                 cv.imwrite(f'{path_saving[0]}.jpg', cv.cvtColor(self.img_inpainted, cv.COLOR_BGR2RGB))
@@ -184,12 +243,20 @@ class MainWindow(QMainWindow):
                 self.display_status_bar_message(f"Error while saving: {e}")
 
     def add_mask_click(self):
-        self.display_status_bar_message(f"Function not added yet")
+        if self.canvas is None and not self.path_original:
+            self.display_status_bar_message("First you need to add image to inpaint")
+            return
+        elif self.canvas is None:
+            self.canvas = Canvas(self.drag_image.width(), self.drag_image.height())
+            self.layout.addWidget(self.canvas, 2, 0)
+        else:
+            self.display_status_bar_message("Already added canvas try holding LPM on image to inpaint")
 
-
-if __name__ == "__main__":
-    app = QApplication([])
-    app.setFont(QFont("Helvetica [Cronyx]", 12))
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    def upload_mask_click(self):
+        if self.canvas is None:
+            self.display_status_bar_message('Before uploading mask you must create it ')
+            return
+        self.img_mask = self.canvas.mask_array
+        if self.path_mask:
+            self.path_mask = ""
+        self.display_status_bar_message('Uploaded created mask to memory. See results with "Make inpaint" button')
