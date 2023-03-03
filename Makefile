@@ -5,4 +5,4 @@ start:
 	python __main__.py
 
 test:
-	pytest -ra
+	python -m pytest

@@ -18,9 +18,9 @@ from threading import Thread
 
 COMBO_MAP = {
     'Skimage-biharmonic': 5,
+    'OpenCV-Shiftmap': 4,
     'OpenCV-NS': 0,
     'OpenCV-TELEA': 1,
-    'OpenCV-Shiftmap': 4,
     'OpenCV-FSR fast': 2,
     'OpenCV-FSR best': 3,
 }
@@ -63,8 +63,11 @@ class Canvas(QLabel):
         painter.drawLine(self.last_x, self.last_y, e.x(), e.y())
         painter.end()
         self.update()
-        self.mask_array[self.last_y, self.last_x] = 255
-        self.mask_array[e.y(), e.x()] = 255
+        try:
+            self.mask_array[self.last_y, self.last_x] = 255
+            self.mask_array[e.y(), e.x()] = 255
+        except IndexError:
+            pass
 
         # Update the origin for next time.
         self.last_x = e.x()
@@ -94,7 +97,7 @@ class MainWindow(QMainWindow):
         self.image_after.setAlignment(Qt.AlignCenter)
         self.btn_inpaint = QPushButton("Make inpaint with specified algorithm:")
         self.btn_inpaint.clicked.connect(self.inpaint_click)
-        self.btn_mask = QPushButton("Upload proper mask for selected image")
+        self.btn_mask = QPushButton("Upload proper mask for image")
         self.btn_mask.clicked.connect(self.mask_click)
         self.btn_save = QPushButton("Save inpainted image")
         self.btn_save.clicked.connect(self.save_click)
@@ -162,6 +165,10 @@ class MainWindow(QMainWindow):
                 return
             self.path_original = file_path
             self.set_image(file_path)
+            if self.canvas:
+                self.canvas.close()
+                self.canvas = None
+                self.img_mask = None
             event.accept()
         else:
             event.ignore()
@@ -197,29 +204,27 @@ class MainWindow(QMainWindow):
     def inpaint_operation(self):
         inpaint_flag = COMBO_MAP[self.combobox_inpaint.currentText()]
         try:
-            self.img_inpainted, error = inpaint_algorithms(
+            self.img_inpainted = inpaint_algorithms(
                 img_path=self.path_original,
                 mask_path=self.path_mask if self.path_mask else None,
                 img_mask=self.img_mask,
                 flag=inpaint_flag,
             )
-            self.movie_stop()
-            if error:
-                self.display_status_bar_message(f"Unhandled error while inpainting: {error}")
-                self.image_after.hide()
-            else:
-                image_after = QImage(
-                    self.img_inpainted,
-                    self.img_inpainted.shape[1],
-                    self.img_inpainted.shape[0],
-                    self.img_inpainted.shape[1] * 3,
-                    QImage.Format_RGB888
-                )
-                pixmap_img_after = QPixmap(image_after)
-                pixmap_img_after = pixmap_img_after.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
-                self.image_after.setPixmap(pixmap_img_after)
         except Exception as e:
+            self.image_after.hide()
             self.display_status_bar_message(f"Error while inpainting: {e}")
+        finally:
+            self.movie_stop()
+            image_after = QImage(
+                self.img_inpainted,
+                self.img_inpainted.shape[1],
+                self.img_inpainted.shape[0],
+                self.img_inpainted.shape[1] * 3,
+                QImage.Format_RGB888
+            )
+            pixmap_img_after = QPixmap(image_after)
+            pixmap_img_after = pixmap_img_after.scaled(512, 512, Qt.KeepAspectRatio, Qt.FastTransformation)
+            self.image_after.setPixmap(pixmap_img_after)
 
     def mask_click(self):
         mask_path, _ = QFileDialog.getOpenFileName(self, "Select mask for image", self.path_original, "All Files (*)")
@@ -228,6 +233,7 @@ class MainWindow(QMainWindow):
                 self.display_status_bar_message("File must have graphic extension like .png")
                 return
             self.path_mask = mask_path
+            self.btn_mask.setText("Replace loaded mask")
 
     def save_click(self):
         if self.img_inpainted is None:
@@ -247,14 +253,15 @@ class MainWindow(QMainWindow):
                 self.display_status_bar_message(f"Error while saving: {e}")
 
     def add_mask_click(self):
-        if self.canvas is None and not self.path_original:
+        if not self.path_original:
             self.display_status_bar_message("First you need to add image to inpaint")
             return
-        elif self.canvas is None:
-            self.canvas = Canvas(self.drag_image.width(), self.drag_image.height())
-            self.layout.addWidget(self.canvas, 2, 0)
-        else:
-            self.display_status_bar_message("Already added canvas try holding LPM on image to inpaint")
+        elif self.canvas:
+            self.canvas.close()
+            self.canvas = None
+        self.canvas = Canvas(self.drag_image.width(), self.drag_image.height())
+        self.layout.addWidget(self.canvas, 2, 0, alignment=Qt.AlignCenter)
+        self.combobox_inpaint.setCurrentIndex(1)
 
     def upload_mask_click(self):
         if self.canvas is None:
@@ -263,4 +270,5 @@ class MainWindow(QMainWindow):
         self.img_mask = self.canvas.mask_array
         if self.path_mask:
             self.path_mask = ""
+        self.btn_mask.setText("Replace loaded mask")
         self.display_status_bar_message('Uploaded created mask to memory. See results with "Make inpaint" button')
